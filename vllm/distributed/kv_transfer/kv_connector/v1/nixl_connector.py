@@ -848,8 +848,6 @@ class NixlConnectorWorker:
             cache_list = cache_or_caches if split_k_and_v else [cache_or_caches]
 
             for cache in cache_list:
-                if self.use_mla and self.device_type == "hpu":
-                    cache = cache[0]
                 base_addr = cache.data_ptr()
                 if base_addr in seen_base_addresses:
                     continue
@@ -859,10 +857,7 @@ class NixlConnectorWorker:
 
                 if tensor_size_bytes is None:
                     tensor_size_bytes = curr_tensor_size_bytes
-                    if self.device_type == "hpu":
-                        self.num_blocks = cache.shape[0] // self.block_size
-                    else:
-                        self.num_blocks = cache.shape[0]
+                    self.num_blocks = cache.shape[0] // self.block_size
 
                 self.block_len_per_layer.append(
                     curr_tensor_size_bytes // self.num_blocks
@@ -1214,8 +1209,7 @@ class NixlConnectorWorker:
                 len(done_sending),
                 len(done_recving),
             )
-            if self.device_type == "hpu":
-                torch.hpu.synchronize()
+            torch.hpu.synchronize()
 
         if self.use_host_buffer:
             for req_id in done_recving:
