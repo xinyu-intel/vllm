@@ -857,7 +857,11 @@ class NixlConnectorWorker:
 
                 if tensor_size_bytes is None:
                     tensor_size_bytes = curr_tensor_size_bytes
-                    self.num_blocks = cache.shape[0] // self.block_size
+                    self.num_blocks = cache.shape[0]
+
+                assert cache.shape[0] == self.num_blocks, (
+                    "All kv cache tensors must have the same number of blocks"
+                )
 
                 self.block_len_per_layer.append(
                     curr_tensor_size_bytes // self.num_blocks
@@ -1209,7 +1213,6 @@ class NixlConnectorWorker:
                 len(done_sending),
                 len(done_recving),
             )
-            torch.hpu.synchronize()
 
         if self.use_host_buffer:
             for req_id in done_recving:
