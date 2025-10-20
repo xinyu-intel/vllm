@@ -1201,7 +1201,7 @@ def grouped_topk(
 
     if routed_scaling_factor != 1.0:
         topk_weights = topk_weights * routed_scaling_factor
-    return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
+    return topk_weights.to(torch.bfloat16), topk_ids.to(torch.int64)
 
 
 @torch.compile(dynamic=True, backend=current_platform.simple_compile_backend)
