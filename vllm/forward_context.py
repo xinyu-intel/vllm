@@ -83,7 +83,8 @@ class DPMetadata:
     num_tokens_across_dp_cpu: torch.Tensor
 
     hidden_states_across_dp: torch.Tensor
-    router_logits_across_dp: torch.Tensor
+    topk_ids_across_dp: torch.Tensor
+    topk_weights_across_dp: torch.Tensor
     local_hidden_states: torch.Tensor
 
     # NOTE: local_sizes should only be set by the chunked_sizes context manager
@@ -119,18 +120,11 @@ class DPMetadata:
         device = current_platform.device_type
 
         if device == "hpu":
-            num_expert_names = [
-                "moe_num_experts",  # Dbrx
-                "num_experts",  # Jamba
-                "n_routed_experts",  # DeepSeek
-                "num_local_experts",  # Mixtral
-            ]
-            num_experts = 0
-            for name in num_expert_names:
-                num_experts = getattr(vllm_config.model_config.hf_text_config, name, 0)
-                if num_experts > 0:
-                    break
-            assert num_experts > 0, (
+            num_experts_per_tok = 0
+            num_experts_per_tok = getattr(
+                vllm_config.model_config.hf_text_config, "num_experts_per_tok", 0
+            )
+            assert num_experts_per_tok > 0, (
                 "No expert found in the model config. Please check the model config."
             )
             if hasattr(vllm_config.model_config.hf_text_config, "quantization_config"):
@@ -150,8 +144,13 @@ class DPMetadata:
             dtype=hidden_states_dtype,
             device=device,
         )
-        router_logits_across_dp = torch.empty(
-            (num_tokens_across_dp, num_experts),
+        topk_ids_across_dp = torch.empty(
+            (num_tokens_across_dp, num_experts_per_tok),
+            dtype=torch.int64,
+            device=device,
+        )
+        topk_weights_across_dp = torch.empty(
+            (num_tokens_across_dp, num_experts_per_tok),
             dtype=dtype,
             device=device,
         )
@@ -168,7 +167,8 @@ class DPMetadata:
             max_tokens_across_dp_cpu,
             num_tokens_across_dp_cpu,
             hidden_states_across_dp,
-            router_logits_across_dp,
+            topk_ids_across_dp,
+            topk_weights_across_dp,
             local_hidden_states,
         )
 

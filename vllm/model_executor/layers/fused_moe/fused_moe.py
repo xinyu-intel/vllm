@@ -1155,8 +1155,6 @@ def grouped_topk(
             routed_scaling_factor=routed_scaling_factor,
         )
 
-    assert hidden_states.size(0) == gating_output.size(0), "Number of tokens mismatch"
-
     gating_output = gating_output.float()
     if e_score_correction_bias is not None:
         e_score_correction_bias = e_score_correction_bias.float()
