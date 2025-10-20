@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union
 import torch
 
 import vllm.envs as envs
-from vllm.config import CUDAGraphMode, ParallelConfig, VllmConfig
+from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.logger import init_logger
 from vllm.v1.worker.ubatch_utils import UBatchSlices
 
@@ -115,6 +115,7 @@ class DPMetadata:
 
         dtype = vllm_config.model_config.dtype
         from vllm.platforms import current_platform
+
         device = current_platform.device_type
 
         if device == "hpu":
@@ -129,12 +130,24 @@ class DPMetadata:
                 num_experts = getattr(vllm_config.model_config.hf_text_config, name, 0)
                 if num_experts > 0:
                     break
-            assert num_experts > 0, \
+            assert num_experts > 0, (
                 "No expert found in the model config. Please check the model config."
+            )
+            if hasattr(vllm_config.model_config.hf_text_config, "quantization_config"):
+                quantization_config = (
+                    vllm_config.model_config.hf_text_config.quantization_config
+                )
+                activation_scheme = quantization_config["activation_scheme"]
+            else:
+                activation_scheme = "none"
+
+        hidden_states_dtype = (
+            torch.float8_e4m3fn if activation_scheme == "static" else dtype
+        )
 
         hidden_states_across_dp = torch.empty(
             (num_tokens_across_dp, hidden_size),
-            dtype=dtype,
+            dtype=hidden_states_dtype,
             device=device,
         )
         router_logits_across_dp = torch.empty(
@@ -142,12 +155,22 @@ class DPMetadata:
             dtype=dtype,
             device=device,
         )
-        local_num_tokens = (num_tokens // tp_size) if vllm_config.parallel_config.use_sequence_parallel_moe else num_tokens
+        local_num_tokens = (
+            (num_tokens // tp_size)
+            if vllm_config.parallel_config.use_sequence_parallel_moe
+            else num_tokens
+        )
         local_hidden_states = torch.empty(
             (local_num_tokens, hidden_size), dtype=dtype, device=device
         )
 
-        return DPMetadata(max_tokens_across_dp_cpu, num_tokens_across_dp_cpu, hidden_states_across_dp, router_logits_across_dp, local_hidden_states)
+        return DPMetadata(
+            max_tokens_across_dp_cpu,
+            num_tokens_across_dp_cpu,
+            hidden_states_across_dp,
+            router_logits_across_dp,
+            local_hidden_states,
+        )
 
     @contextmanager
     def chunked_sizes(

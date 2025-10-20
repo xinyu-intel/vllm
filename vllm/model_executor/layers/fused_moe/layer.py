@@ -1196,6 +1196,10 @@ class FusedMoE(CustomOp):
         )
         if quant_method is None:
             quant_method = UnquantizedFusedMoEMethod(moe)
+        if quant_config is None:
+            self.activation_scheme = "none"
+        else:
+            self.activation_scheme = quant_config.activation_scheme
 
         assert quant_method is not None
         assert isinstance(quant_method, FusedMoEMethodBase)
@@ -2247,9 +2251,13 @@ class FusedMoE(CustomOp):
 
         with sp_ctx:
             if do_naive_dispatch_combine:
-                hidden_states, router_logits = get_ep_group().dispatch(
-                    hidden_states, router_logits, self.is_sequence_parallel
+                _, router_logits = get_ep_group().dispatch(
+                    None, router_logits, self.is_sequence_parallel
                 )
+                if self.activation_scheme != "static":
+                    hidden_states, _ = get_ep_group().dispatch(
+                        hidden_states, None, self.is_sequence_parallel
+                    )
 
             # Matrix multiply.
             final_hidden_states = self.quant_method.apply(
