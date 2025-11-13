@@ -116,6 +116,17 @@ class XPUPlatform(Platform):
         return device_props.total_memory
 
     @classmethod
+    def get_nixl_supported_devices(cls) -> dict[str, tuple[str, ...]]:
+        return {"xpu": ("cpu", "xpu")}
+
+    @classmethod
+    def get_nixl_memory_type(cls) -> str:
+        if os.environ.get("VLLM_NIXL_DEVICE_TO_DEVICE", "0").lower() in ["1", "true"]:
+            return "VRAM"
+        else:
+            return "DRAM"
+
+    @classmethod
     def inference_mode(cls):
         return torch.no_grad()
 

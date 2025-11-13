@@ -87,7 +87,7 @@ _NIXL_SUPPORTED_DEVICE = {
         "cpu",
     ),
     "tpu": ("cpu",),
-    "xpu": ("cpu",),
+    "xpu": ("cpu", "xpu"),
 }
 # support for oot platform by providing mapping in current_platform
 _NIXL_SUPPORTED_DEVICE.update(current_platform.get_nixl_supported_devices())
