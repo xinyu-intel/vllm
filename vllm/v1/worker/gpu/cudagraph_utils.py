@@ -54,7 +54,7 @@ class CudaGraphManager:
         )
 
         self.graphs: dict[int, torch.cuda.CUDAGraph] = {}
-        self.pool = torch.cuda.graph_pool_handle()
+        self.pool = torch.cuda.graph_pool_handle() if self.cudagraph_mode != CUDAGraphMode.NONE else None
         self.hidden_states: torch.Tensor | None = None
 
     def needs_capture(self) -> bool:

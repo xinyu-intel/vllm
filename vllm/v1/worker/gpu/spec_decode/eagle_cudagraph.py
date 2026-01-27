@@ -54,7 +54,7 @@ class EagleCudaGraphManager:
         )
 
         self.graphs: dict[int, torch.cuda.CUDAGraph] = {}
-        self.pool = torch.cuda.graph_pool_handle()
+        self.pool = torch.cuda.graph_pool_handle() if self.cudagraph_mode != CUDAGraphMode.NONE else None
 
     def get_cudagraph_size(self, num_tokens: int) -> int | None:
         return self.cudagraph_sizes.get(num_tokens)
