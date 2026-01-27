@@ -83,6 +83,7 @@ from vllm.multimodal.inputs import (
     PlaceholderRange,
 )
 from vllm.multimodal.utils import group_mm_kwargs_by_modality
+from vllm.platforms import current_platform
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingType
 from vllm.sequence import IntermediateTensors
@@ -201,7 +202,7 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         sampled_token_ids: torch.Tensor,
         logprobs_tensors: LogprobsTensors | None,
         invalid_req_indices: list[int],
-        async_output_copy_stream: torch.cuda.Stream,
+        async_output_copy_stream: torch.Stream,
         vocab_size: int,
     ):
         self._model_runner_output = model_runner_output
@@ -217,8 +218,8 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         self._logprobs_tensors = logprobs_tensors
 
         # Initiate the copy on a separate stream, but do not synchronize it.
-        default_stream = torch.cuda.current_stream()
-        with torch.cuda.stream(async_output_copy_stream):
+        default_stream = torch.accelerator.current_stream()
+        with async_output_copy_stream:
             async_output_copy_stream.wait_stream(default_stream)
             self.sampled_token_ids_cpu = self._sampled_token_ids.to(
                 "cpu", non_blocking=True
@@ -268,7 +269,7 @@ class AsyncGPUPoolingModelRunnerOutput(AsyncModelRunnerOutput):
         model_runner_output: ModelRunnerOutput,
         raw_pooler_output: PoolerOutput,
         finished_mask: list[bool],
-        async_output_copy_stream: torch.cuda.Stream,
+        async_output_copy_stream: torch.Stream,
     ):
         self._model_runner_output = model_runner_output
 
@@ -280,8 +281,8 @@ class AsyncGPUPoolingModelRunnerOutput(AsyncModelRunnerOutput):
         self._raw_pooler_output = raw_pooler_output
 
         # Initiate the copy on a separate stream, but do not synchronize it.
-        default_stream = torch.cuda.current_stream()
-        with torch.cuda.stream(async_output_copy_stream):
+        default_stream = torch.accelerator.current_stream()
+        with async_output_copy_stream:
             async_output_copy_stream.wait_stream(default_stream)
             raw_pooler_output_cpu = json_map_leaves(
                 lambda x: None if x is None else x.to("cpu", non_blocking=True),
@@ -486,7 +487,7 @@ class GPUModelRunner(
         # NOTE(rob): num_prompt_logprobs only includes reqs
         # that are currently in the prefill phase.
         self.num_prompt_logprobs: dict[str, int] = {}
-        self.comm_stream = torch.cuda.Stream()
+        self.comm_stream = torch.Stream()
 
         # Input Batch
         # NOTE(Chen): Ideally, we should initialize the input batch inside
@@ -529,12 +530,12 @@ class GPUModelRunner(
 
         # Separate cuda stream for overlapping transfer of sampled token ids from
         # GPU to CPU when async scheduling is enabled.
-        self.async_output_copy_stream: torch.cuda.Stream | None = None
+        self.async_output_copy_stream: torch.Stream | None = None
         # cuda event to synchronize use of reused CPU tensors between steps
         # when async scheduling is enabled.
         self.prepare_inputs_event: torch.Event | None = None
         if self.use_async_scheduling:
-            self.async_output_copy_stream = torch.cuda.Stream()
+            self.async_output_copy_stream = torch.Stream()
             self.prepare_inputs_event = torch.Event()
 
         # self.cudagraph_batch_sizes sorts in ascending order.
@@ -670,16 +671,16 @@ class GPUModelRunner(
         # Pre-allocated tensor for copying valid sampled token counts to CPU,
         # with dedicated stream for overlapping and event for coordination.
         self.valid_sampled_token_count_event: torch.Event | None = None
-        self.valid_sampled_token_count_copy_stream: torch.cuda.Stream | None = None
+        self.valid_sampled_token_count_copy_stream: torch.Stream | None = None
         # We also copy the drafted tokens to the CPU asynchronously,
         # in case we need them for structured outputs.
         self.draft_token_ids_event: torch.Event | None = None
-        self.draft_token_ids_copy_stream: torch.cuda.Stream | None = None
+        self.draft_token_ids_copy_stream: torch.Stream | None = None
         self.valid_sampled_token_count_cpu: torch.Tensor | None = None
         self.draft_token_ids_cpu: torch.Tensor | None = None
         if self.num_spec_tokens:
             self.draft_token_ids_event = torch.Event()
-            self.draft_token_ids_copy_stream = torch.cuda.Stream()
+            self.draft_token_ids_copy_stream = torch.Stream()
             self.draft_token_ids_cpu = torch.empty(
                 (self.max_num_reqs, self.num_spec_tokens),
                 dtype=torch.int64,
@@ -688,7 +689,7 @@ class GPUModelRunner(
             )
             if self.use_async_scheduling:
                 self.valid_sampled_token_count_event = torch.Event()
-                self.valid_sampled_token_count_copy_stream = torch.cuda.Stream()
+                self.valid_sampled_token_count_copy_stream = torch.Stream()
                 self.valid_sampled_token_count_cpu = torch.empty(
                     self.max_num_reqs,
                     dtype=torch.int64,
@@ -701,6 +702,9 @@ class GPUModelRunner(
         self.kv_connector_output: KVConnectorOutput | None = None
         self.mamba_state_idx: dict[str, int] = {}
         self.layerwise_nvtx_hooks_registered = False
+
+        if current_platform.is_xpu():
+            self.cascade_attn_enabled = False
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.max_model_len = max_model_len
@@ -843,13 +847,16 @@ class GPUModelRunner(
 
     # Note: used for model runner override.
     def _init_device_properties(self) -> None:
-        """Initialize attributes from torch.cuda.get_device_properties"""
-        self.device_properties = torch.cuda.get_device_properties(self.device)
-        self.num_sms = self.device_properties.multi_processor_count
+        """Initialize attributes from torch.accelerator.get_device_properties"""
+        if current_platform.is_cuda():
+            self.device_properties = torch.cuda.get_device_properties(self.device)
+            self.num_sms = self.device_properties.multi_processor_count
+        elif current_platform.is_xpu():
+            self.num_sms = 0
 
     # Note: used for model runner override.
     def _sync_device(self) -> None:
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
 
     def _update_states(self, scheduler_output: "SchedulerOutput") -> None:
         """Update the cached states and the persistent batch with the scheduler
@@ -3776,9 +3783,9 @@ class GPUModelRunner(
         assert self.draft_token_ids_event is not None
         assert self.draft_token_ids_copy_stream is not None
         assert self.draft_token_ids_cpu is not None
-        default_stream = torch.cuda.current_stream()
+        default_stream = torch.accelerator.current_stream()
         num_reqs = draft_token_ids.shape[0]
-        with torch.cuda.stream(self.draft_token_ids_copy_stream):
+        with self.draft_token_ids_copy_stream:
             if not zeros_only:
                 # Trigger async copy of draft token ids to cpu.
                 self.draft_token_ids_copy_stream.wait_stream(default_stream)
@@ -3807,10 +3814,10 @@ class GPUModelRunner(
         if self.valid_sampled_token_count_event is None:
             return
 
-        default_stream = torch.cuda.current_stream()
+        default_stream = torch.accelerator.current_stream()
         # Initialize a new stream to overlap the copy operation with
         # prepare_input of draft model.
-        with torch.cuda.stream(self.valid_sampled_token_count_copy_stream):
+        with self.valid_sampled_token_count_copy_stream:
             self.valid_sampled_token_count_copy_stream.wait_stream(default_stream)  # type: ignore
             counts = valid_sampled_tokens_count
             counts_cpu = self.valid_sampled_token_count_cpu
@@ -4104,7 +4111,7 @@ class GPUModelRunner(
                     self.model.set_aux_hidden_state_layers(aux_layers)
                 time_after_load = time.perf_counter()
             self.model_memory_usage = m.consumed_memory
-        except torch.cuda.OutOfMemoryError as e:
+        except torch.accelerator.OutOfMemoryError as e:
             msg = (
                 "Failed to load model - not enough GPU memory. "
                 "Try lowering --gpu-memory-utilization to free memory for weights, "
@@ -5019,7 +5026,7 @@ class GPUModelRunner(
         # can reuse the memory pool allocated for the large shapes.
         set_cudagraph_capturing_enabled(True)
         with freeze_gc(), graph_capture(device=self.device):
-            start_free_gpu_memory = torch.cuda.mem_get_info()[0]
+            start_free_gpu_memory = torch.accelerator.mem_get_info()[0]
 
             for (
                 runtime_mode,
@@ -5030,8 +5037,8 @@ class GPUModelRunner(
                     cudagraph_runtime_mode=runtime_mode,
                 )
 
-            torch.cuda.synchronize()
-            end_free_gpu_memory = torch.cuda.mem_get_info()[0]
+            torch.accelerator.synchronize()
+            end_free_gpu_memory = torch.accelerator.mem_get_info()[0]
 
         # Disable cudagraph capturing globally, so any unexpected cudagraph
         # capturing will be detected and raise an error after here.
@@ -6028,13 +6035,13 @@ class GPUModelRunner(
         group_refs = group_lora_refs[current_item_idx : current_item_idx + num_items]
         group_request_ids = {req_id for req_id, _ in group_refs}
 
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         start_time = time.perf_counter()
 
         try:
             yield
         finally:
-            torch.cuda.synchronize()
+            torch.accelerator.synchronize()
             elapsed = time.perf_counter() - start_time
 
             per_request_time = elapsed / max(len(group_request_ids), 1)

@@ -93,10 +93,10 @@ class MemorySnapshot:
         device = self.device_
 
         # we measure the torch peak memory usage via allocated_bytes,
-        # rather than `torch.cuda.memory_reserved()` .
-        # After `torch.cuda.reset_peak_memory_stats()`,
-        # `torch.cuda.memory_reserved()` will keep growing, and only shrink
-        # when we call `torch.cuda.empty_cache()` or OOM happens.
+        # rather than `torch.accelerator.memory_reserved()` .
+        # After `torch.accelerator.reset_peak_memory_stats()`,
+        # `torch.accelerator.memory_reserved()` will keep growing, and only shrink
+        # when we call `torch.accelerator.empty_cache()` or OOM happens.
         self.torch_peak = current_platform.memory_stats(device).get(
             "allocated_bytes.all.peak", 0
         )
@@ -113,7 +113,7 @@ class MemorySnapshot:
             # the cudaMemGetInfo function shows the amount of free system memory
             # rather than what’s actually available.
             # In the case,
-            # torch.cuda.mem_get_info() only reports "free" memory,
+            # torch.accelerator.mem_get_info() only reports "free" memory,
             # which can be lower than what is actually
             # available due to not including cache memory.
             # There’s also a comprehensive reference page
@@ -123,7 +123,7 @@ class MemorySnapshot:
 
         self.cuda_memory = self.total_memory - self.free_memory
 
-        # torch.cuda.memory_reserved() is how many bytes
+        # torch.accelerator.memory_reserved() is how many bytes
         # PyTorch gets from cuda (by calling cudaMalloc, etc.)
         # this is used to measure the non-torch memory usage
         self.torch_memory = current_platform.memory_reserved(device)
@@ -243,7 +243,7 @@ def memory_profiling(
     The memory used for loading weights (a.) is directly given from the
     argument `weights_memory`.
 
-    The increase of `torch.cuda.memory_stats()["allocated_bytes.all.peak"]`
+    The increase of `torch.accelerator.memory_stats()["allocated_bytes.all.peak"]`
     during profiling gives (b.).
 
     The increase of `non_torch_memory` from creating the current vLLM instance

@@ -110,7 +110,7 @@ class Worker(WorkerBase):
     def sleep(self, level: int = 1) -> None:
         from vllm.device_allocator.cumem import CuMemAllocator
 
-        free_bytes_before_sleep = torch.cuda.mem_get_info()[0]
+        free_bytes_before_sleep = torch.accelerator.mem_get_info()[0]
 
         # Save the buffers before level 2 sleep
         if level == 2:
@@ -121,7 +121,7 @@ class Worker(WorkerBase):
 
         allocator = CuMemAllocator.get_instance()
         allocator.sleep(offload_tags=("weights",) if level == 1 else tuple())
-        free_bytes_after_sleep, total = torch.cuda.mem_get_info()
+        free_bytes_after_sleep, total = torch.accelerator.mem_get_info()
         freed_bytes = free_bytes_after_sleep - free_bytes_before_sleep
         used_bytes = total - free_bytes_after_sleep
         assert freed_bytes >= 0, "Memory usage increased after sleeping."
@@ -173,7 +173,7 @@ class Worker(WorkerBase):
         self.cache_config.num_cpu_blocks = num_cpu_blocks
 
     def init_device(self):
-        if self.device_config.device_type == "cuda":
+        if self.device_config.device_type in ["cuda", "xpu"]:
             # This env var set by Ray causes exceptions with graph building.
             os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
             parallel_config = self.parallel_config
@@ -195,19 +195,23 @@ class Worker(WorkerBase):
 
                 # DP_LOCAL_RANK * TP_PP_WORLD_SIZE + TP_LOCAL_RANK
                 self.local_rank += dp_local_rank * tp_pp_world_size
-                assert self.local_rank < torch.cuda.device_count(), (
+                assert self.local_rank < torch.accelerator.device_count(), (
                     f"DP adjusted local rank {self.local_rank} is out of bounds. "
                 )
                 visible_device_count = (
-                    torch.cuda.device_count() if torch.cuda.is_available() else 0
+                    torch.accelerator.device_count()
+                    if torch.accelerator.is_available()
+                    else 0
                 )
                 assert self.parallel_config.local_world_size <= visible_device_count, (
                     f"local_world_size ({self.parallel_config.local_world_size}) must "
                     f"be less than or equal to the number of visible devices "
                     f"({visible_device_count})."
                 )
-            self.device = torch.device(f"cuda:{self.local_rank}")
-            current_platform.set_device(self.device)
+            self.device = torch.device(
+                f"{current_platform.device_name}:{self.local_rank}"
+            )
+            torch.accelerator.set_device_index(self.device)
 
             current_platform.check_if_supports_dtype(self.model_config.dtype)
 
@@ -228,7 +232,7 @@ class Worker(WorkerBase):
 
             # Now take memory snapshot after NCCL is initialized
             gc.collect()
-            torch.cuda.empty_cache()
+            torch.accelerator.empty_cache()
 
             # take current memory snapshot
             self.init_snapshot = init_snapshot = MemorySnapshot(device=self.device)
@@ -511,7 +515,7 @@ class Worker(WorkerBase):
         # sampling related tensors of max possible shape to avoid memory
         # fragmentation issue.
         # NOTE: This is called after `capture_model` on purpose to prevent
-        # memory buffers from being cleared by `torch.cuda.empty_cache`.
+        # memory buffers from being cleared by `torch.accelerator.empty_cache`.
         if get_pp_group().is_last_rank:
             max_num_reqs = min(
                 self.scheduler_config.max_num_seqs,
@@ -702,7 +706,7 @@ class Worker(WorkerBase):
             global_expert_loads=None,
             rank_mapping=rank_mapping,
         )
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         if get_ep_group().rank == 0:
             logger.info("[Elastic EP] Expert resharding completed!")
 

@@ -19,8 +19,8 @@ class AsyncOutput(AsyncModelRunnerOutput):
         model_runner_output: ModelRunnerOutput,
         sampler_output: SamplerOutput,
         num_sampled_tokens: torch.Tensor,
-        copy_stream: torch.cuda.Stream,
-        copy_event: torch.cuda.Event,
+        copy_stream: torch.Stream,
+        copy_event: torch.Event,
     ):
         # NOTE(woosuk): We must retain references to the GPU tensors,
         # as the copy operations are performed on a different CUDA stream than
@@ -31,8 +31,8 @@ class AsyncOutput(AsyncModelRunnerOutput):
         self.copy_stream = copy_stream
         self.copy_event = copy_event
 
-        default_stream = torch.cuda.current_stream()
-        with torch.cuda.stream(self.copy_stream):
+        default_stream = torch.accelerator.current_stream()
+        with self.copy_stream:
             self.copy_stream.wait_stream(default_stream)
 
             self.sampled_token_ids = async_copy_to_np(sampler_output.sampled_token_ids)
@@ -84,7 +84,7 @@ class AsyncOutput(AsyncModelRunnerOutput):
 
 
 @contextmanager
-def async_barrier(event: torch.cuda.Event | None):
+def async_barrier(event: torch.Event | None):
     if event is not None:
         event.synchronize()
     try:

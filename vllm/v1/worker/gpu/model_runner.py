@@ -121,11 +121,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             )
 
         self.use_async_scheduling = self.scheduler_config.async_scheduling
-        self.output_copy_stream = torch.cuda.Stream(self.device)
-        self.output_copy_event = torch.cuda.Event()
+        self.output_copy_stream = torch.Stream(self.device)
+        self.output_copy_event = torch.Event()
         if self.use_async_scheduling:
-            self.input_prep_event = torch.cuda.Event()
-            self.structured_outputs_event = torch.cuda.Event()
+            self.input_prep_event = torch.Event()
+            self.structured_outputs_event = torch.Event()
         else:
             self.input_prep_event = None
             self.structured_outputs_event = None
@@ -350,7 +350,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 slot_mappings=None,
                 num_tokens_across_dp=num_tokens_across_dp,
             )
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         del hidden_states, sample_hidden_states
         gc.collect()
 
@@ -372,8 +372,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         start_time = time.perf_counter()
         gc.collect()
-        torch.cuda.empty_cache()
-        start_free_gpu_memory = torch.cuda.mem_get_info()[0]
+        torch.accelerator.empty_cache()
+        start_free_gpu_memory = torch.accelerator.mem_get_info()[0]
 
         with self.maybe_setup_dummy_loras(self.lora_config):
             mrope_positions = None
@@ -395,7 +395,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.speculator.capture_model()
 
         end_time = time.perf_counter()
-        end_free_gpu_memory = torch.cuda.mem_get_info()[0]
+        end_free_gpu_memory = torch.accelerator.mem_get_info()[0]
         elapsed_time = end_time - start_time
         cuda_graph_size = start_free_gpu_memory - end_free_gpu_memory
         # This usually takes 5~20 seconds.
@@ -411,7 +411,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # to trigger JIT compilation.
         if all("FLASHINFER" in b.get_name() for b in self.attn_backends.values()):
             self._dummy_run(self.max_num_tokens, skip_attn=False)
-            torch.cuda.synchronize()
+            torch.accelerator.synchronize()
 
     def finish_requests(self, scheduler_output: SchedulerOutput) -> None:
         finished_req_ids = scheduler_output.finished_req_ids

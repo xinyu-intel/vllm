@@ -194,7 +194,7 @@ class StagedWriteTensor:
             # involving the old buffer have finished before allocating a new one.
             # This prevents potential race conditions. The slight overhead is
             # negligible because the reallocations are infrequent in practice.
-            torch.cuda.synchronize()
+            torch.accelerator.synchronize()
         contents_uva = self.write_contents.copy_to_uva(self._staged_write_contents)
 
         # Write diffs to the GPU buffer
