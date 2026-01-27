@@ -5,10 +5,11 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 import torch
 
+from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 from vllm.utils.math_utils import next_power_of_2
 from vllm.utils.platform_utils import is_uva_available
-from vllm.utils.torch_utils import get_cuda_view_from_cpu_tensor
+from vllm.utils.torch_utils import get_cuda_view_from_cpu_tensor, get_xpu_view_from_cpu_tensor
 
 
 def async_copy_to_gpu(
@@ -37,7 +38,10 @@ class UvaBuffer:
             raise RuntimeError("UVA is not available")
         self.cpu = torch.zeros(size, dtype=dtype, device="cpu", pin_memory=True)
         self.np = self.cpu.numpy()
-        self.uva = get_cuda_view_from_cpu_tensor(self.cpu)
+        if current_platform.is_xpu():
+            self.uva = get_xpu_view_from_cpu_tensor(self.cpu)
+        else:
+            self.uva = get_cuda_view_from_cpu_tensor(self.cpu)
 
 
 class UvaBufferPool:
