@@ -16,7 +16,9 @@ rms_no_var_size = lambda x, w, e, var_size=None: var_size is None
 
 
 @ir.ops.rms_norm.register_impl(
-    "vllm_c", supports_args=rms_no_var_size, supported=CUDA_ALIKE
+    "vllm_c",
+    supports_args=rms_no_var_size,
+    supported=CUDA_ALIKE or current_platform.is_xpu(),
 )
 def rms_norm(
     x: Tensor, weight: Tensor | None, epsilon: float, variance_size: int | None = None

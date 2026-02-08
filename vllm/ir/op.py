@@ -100,6 +100,7 @@ class IrOp:
 
         # torch registration
         vllm_ir_lib.define(self.name + self._schema_str, tags=tags)
+        vllm_ir_lib.impl(self.name, self._inner_call, dispatch_key="XPU")
         vllm_ir_lib.impl(self.name, self._inner_call, dispatch_key="CUDA")
         vllm_ir_lib.impl(self.name, self._inner_call, dispatch_key="CPU")
         vllm_ir_lib._register_fake(self.name, self._fake_call)
