@@ -19,6 +19,7 @@ from .interface import DeviceCapability, Platform, PlatformEnum
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
+    from vllm.config.kernel import IrOpPriorityConfig
     from vllm.v1.attention.selector import AttentionSelectorConfig
 else:
     VllmConfig = None
@@ -275,3 +276,18 @@ class XPUPlatform(Platform):
         """Copy blocks from XPU to host (CPU)."""
         _src_cache = src_cache[:, src_block_indices]
         dst_cache[:, dst_block_indices] = _src_cache.cpu()
+
+    @classmethod
+    def get_default_ir_op_priority(
+        cls, vllm_config: "VllmConfig"
+    ) -> "IrOpPriorityConfig":
+        from vllm.config.compilation import CompilationMode
+        from vllm.config.kernel import IrOpPriorityConfig
+
+        cc = vllm_config.compilation_config
+        if cc.backend == "inductor" and cc.mode != CompilationMode.NONE:
+            # Native used by default when compiling
+            return IrOpPriorityConfig.with_default(["native"])
+
+        # Use vllm_c kernels where available when no codegen
+        return IrOpPriorityConfig.with_default(["xpu_kernels", "vllm_c", "native"])
