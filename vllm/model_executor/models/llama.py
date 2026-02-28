@@ -24,6 +24,7 @@
 # limitations under the License.
 """Inference-only LLaMA model compatible with HuggingFace weights."""
 
+import os
 from collections.abc import Iterable
 from itertools import islice
 
@@ -41,6 +42,7 @@ from vllm.model_executor.layers.attention import (
 )
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
+    ColumnParallelLinear,
     MergedColumnParallelLinear,
     QKVParallelLinear,
     RowParallelLinear,
@@ -75,6 +77,15 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
+
+
+def _llama_unfuse_qkv_gemm_enabled() -> bool:
+    return os.getenv("VLLM_LLAMA_UNFUSE_QKV_GEMM", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class LlamaMLP(nn.Module):
@@ -160,15 +171,47 @@ class LlamaAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.max_position_embeddings = max_position_embeddings
 
-        self.qkv_proj = QKVParallelLinear(
-            hidden_size=hidden_size,
-            head_size=self.head_dim,
-            total_num_heads=self.total_num_heads,
-            total_num_kv_heads=self.total_num_kv_heads,
-            bias=bias,
-            quant_config=quant_config,
-            prefix=f"{prefix}.qkv_proj",
-        )
+        self.use_unfused_qkv = _llama_unfuse_qkv_gemm_enabled()
+        if self.use_unfused_qkv:
+            if self.total_num_kv_heads < tp_size:
+                raise NotImplementedError(
+                    "Unfused q/k/v projection in LlamaAttention currently "
+                    "requires num_key_value_heads >= tensor_parallel_size."
+                )
+
+            self.q_proj = ColumnParallelLinear(
+                input_size=hidden_size,
+                output_size=self.total_num_heads * self.head_dim,
+                bias=bias,
+                quant_config=quant_config,
+                prefix=f"{prefix}.q_proj",
+            )
+
+            self.k_proj = ColumnParallelLinear(
+                input_size=hidden_size,
+                output_size=self.total_num_kv_heads * self.head_dim,
+                bias=bias,
+                quant_config=quant_config,
+                prefix=f"{prefix}.k_proj",
+            )
+
+            self.v_proj = ColumnParallelLinear(
+                input_size=hidden_size,
+                output_size=self.total_num_kv_heads * self.head_dim,
+                bias=bias,
+                quant_config=quant_config,
+                prefix=f"{prefix}.v_proj",
+            )
+        else:
+            self.qkv_proj = QKVParallelLinear(
+                hidden_size=hidden_size,
+                head_size=self.head_dim,
+                total_num_heads=self.total_num_heads,
+                total_num_kv_heads=self.total_num_kv_heads,
+                bias=bias,
+                quant_config=quant_config,
+                prefix=f"{prefix}.qkv_proj",
+            )
 
         self.o_proj = RowParallelLinear(
             input_size=self.total_num_heads * self.head_dim,
@@ -224,8 +267,13 @@ class LlamaAttention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        if self.use_unfused_qkv:
+            q, _ = self.q_proj(hidden_states)
+            k, _ = self.k_proj(hidden_states)
+            v, _ = self.v_proj(hidden_states)
+        else:
+            qkv, _ = self.qkv_proj(hidden_states)
+            q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
@@ -439,15 +487,18 @@ class LlamaModel(nn.Module):
         return hidden_states
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        params_dict = dict(self.named_parameters())
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
-            (".qkv_proj", ".q_proj", "q"),
-            (".qkv_proj", ".k_proj", "k"),
-            (".qkv_proj", ".v_proj", "v"),
             (".gate_up_proj", ".gate_proj", 0),
             (".gate_up_proj", ".up_proj", 1),
         ]
-        params_dict = dict(self.named_parameters())
+        if any(".qkv_proj" in name for name in params_dict):
+            stacked_params_mapping.extend([
+                (".qkv_proj", ".q_proj", "q"),
+                (".qkv_proj", ".k_proj", "k"),
+                (".qkv_proj", ".v_proj", "v"),
+            ])
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
             if "rotary_emb.inv_freq" in name:
@@ -507,9 +558,14 @@ class LlamaForCausalLM(
     nn.Module, SupportsLoRA, SupportsPP, SupportsEagle, SupportsEagle3
 ):
     packed_modules_mapping = {
-        "qkv_proj": ["q_proj", "k_proj", "v_proj"],
         "gate_up_proj": ["gate_proj", "up_proj"],
     }
+    if not _llama_unfuse_qkv_gemm_enabled():
+        packed_modules_mapping["qkv_proj"] = [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+            ]
 
     # LoRA specific attributes
     embedding_modules = {
@@ -528,6 +584,16 @@ class LlamaForCausalLM(
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         self.config = config
+
+        self.packed_modules_mapping = {
+            "gate_up_proj": ["gate_proj", "up_proj"],
+        }
+        if not _llama_unfuse_qkv_gemm_enabled():
+            self.packed_modules_mapping["qkv_proj"] = [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+            ]
 
         self.model = self._init_model(
             vllm_config=vllm_config,
