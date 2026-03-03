@@ -701,20 +701,20 @@ def _run_single_benchmark(
     # Warmup
     for _ in range(config.warmup_iters):
         forward_fn()
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     # Benchmark
     times = []
     for _ in range(config.repeats):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
+        start = torch.Event(enable_timing=True)
+        end = torch.Event(enable_timing=True)
 
         start.record()
         for _ in range(config.num_layers):
             forward_fn()
         end.record()
 
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         elapsed_ms = start.elapsed_time(end)
         times.append(elapsed_ms / 1000.0 / config.num_layers)
 
@@ -758,7 +758,7 @@ def _run_mla_benchmark_batched(
 
     backend_cfg = _get_backend_config(backend)
     device = torch.device(configs_with_params[0][0].device)
-    torch.cuda.set_device(device)
+    torch.accelerator.set_device_index(device)
 
     # Determine block size
     config_block_size = configs_with_params[0][0].block_size

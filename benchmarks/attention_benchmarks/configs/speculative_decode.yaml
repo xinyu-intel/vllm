@@ -48,7 +48,7 @@ backends:
 # - FLASHINFER_MLA
 
 # Benchmark settings
-device: "cuda:0"
+device: "xpu:0"
 repeats: 10  # More repeats for statistical significance
 warmup_iters: 5
 profile_memory: false

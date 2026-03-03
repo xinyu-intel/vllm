@@ -391,13 +391,13 @@ def _run_single_benchmark(
                 attn_metadata,
                 output=out,
             )
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     # Benchmark
     times = []
     for _ in range(config.repeats):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
+        start = torch.Event(enable_timing=True)
+        end = torch.Event(enable_timing=True)
 
         start.record()
         for i in range(config.num_layers):
@@ -412,15 +412,15 @@ def _run_single_benchmark(
             )
         end.record()
 
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         elapsed_ms = start.elapsed_time(end)
         times.append(elapsed_ms / 1000.0 / config.num_layers)  # seconds per layer
 
     mem_stats = {}
     if config.profile_memory:
         mem_stats = {
-            "allocated_mb": torch.cuda.memory_allocated(device) / 1024**2,
-            "reserved_mb": torch.cuda.memory_reserved(device) / 1024**2,
+            "allocated_mb": torch.accelerator.memory_allocated(device) / 1024**2,
+            "reserved_mb": torch.accelerator.memory_reserved(device) / 1024**2,
         }
 
     return times, mem_stats
@@ -444,7 +444,7 @@ def run_attention_benchmark(config: BenchmarkConfig) -> BenchmarkResult:
         BenchmarkResult with timing and memory statistics
     """
     device = torch.device(config.device)
-    torch.cuda.set_device(device)
+    torch.accelerator.set_device_index(device)
 
     backend_cfg = _get_backend_config(config.backend)
 

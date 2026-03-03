@@ -169,7 +169,7 @@ python benchmark.py \
 --block-size N                      # Block size
 
 # Benchmark settings
---device DEVICE                     # Device (default: cuda:0)
+--device DEVICE                     # Device (default: xpu:0)
 --repeats N                         # Repetitions
 --warmup-iters N                    # Warmup iterations
 --profile-memory                    # Profile memory usage
@@ -210,7 +210,7 @@ config = BenchmarkConfig(
     num_q_heads=128,
     num_kv_heads=1,
     block_size=128,
-    device="cuda:0",
+    device="xpu:0",
     repeats=5,
     warmup_iters=3,
 )

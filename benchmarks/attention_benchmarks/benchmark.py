@@ -465,7 +465,7 @@ def main():
     parser.add_argument("--block-size", type=int, default=16, help="Block size")
 
     # Benchmark settings
-    parser.add_argument("--device", default="cuda:0", help="Device")
+    parser.add_argument("--device", default="xpu:0", help="Device")
     parser.add_argument("--repeats", type=int, default=1, help="Repetitions")
     parser.add_argument("--warmup-iters", type=int, default=3, help="Warmup iterations")
     parser.add_argument("--profile-memory", action="store_true", help="Profile memory")
