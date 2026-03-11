@@ -60,6 +60,7 @@ def _torch_cuda_wrapper():
             torch.cuda.graph = torch.xpu.graph
             torch.cuda.CUDAGraph = torch.xpu.XPUGraph
             torch.cuda.graph_pool_handle = torch.xpu.graph_pool_handle
+            torch.cuda.memory_reserved = torch.xpu.memory_reserved
         yield
     finally:
         pass
