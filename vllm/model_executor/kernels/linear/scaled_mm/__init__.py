@@ -21,6 +21,7 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
     ChannelWiseTorchFP8ScaledMMLinearKernel,
     PerTensorTorchFP8ScaledMMLinearKernel,
     RowWiseTorchFP8ScaledMMLinearKernel,
+    TorchMXFP8ScaledMMLinearKernel,
 )
 from vllm.model_executor.kernels.linear.scaled_mm.rocm import (
     ROCmFP8ScaledMMLinearKernel,
@@ -30,6 +31,8 @@ from vllm.model_executor.kernels.linear.scaled_mm.ScaledMMLinearKernel import (
     FP8ScaledMMLinearLayerConfig,
     Int8ScaledMMLinearKernel,
     Int8ScaledMMLinearLayerConfig,
+    MXFP8ScaledMMLinearKernel,
+    MXFP8ScaledMMLinearLayerConfig,
     ScaledMMLinearKernel,
     ScaledMMLinearLayerConfig,
 )
@@ -55,4 +58,8 @@ __all__ = [
     "RowWiseTorchFP8ScaledMMLinearKernel",
     "ROCmFP8ScaledMMLinearKernel",
     "TritonInt8ScaledMMLinearKernel",
+    "MXFP8ScaledMMLinearKernel",
+    "MXFP8ScaledMMLinearLayerConfig",
+    "TorchMXFP8ScaledMMLinearKernel",
+    "XPUMXFP8ScaledMMLinearKernel",
 ]

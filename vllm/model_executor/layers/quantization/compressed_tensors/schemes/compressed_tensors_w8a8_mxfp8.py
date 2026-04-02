@@ -6,8 +6,9 @@ from collections.abc import Callable
 import torch
 
 from vllm.model_executor.kernels.linear import (
-    MXFP8LinearLayerConfig,
-    choose_mxfp8_linear_kernel,
+    _POSSIBLE_MXFP8_KERNELS,
+    MXFP8ScaledMMLinearLayerConfig,
+    choose_scaled_mm_linear_kernel,
 )
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
     CompressedTensorsScheme,
@@ -57,7 +58,7 @@ class CompressedTensorsW8A8MXFp8(CompressedTensorsScheme):
                 f"{MXFP8_BLOCK_SIZE}, got {input_size_per_partition}"
             )
 
-        mxfp8_linear_kernel_config = MXFP8LinearLayerConfig(
+        mxfp8_linear_kernel_config = MXFP8ScaledMMLinearLayerConfig(
             full_weight_shape=(input_size, output_size),
             partition_weight_shape=(
                 input_size_per_partition,
@@ -66,7 +67,9 @@ class CompressedTensorsW8A8MXFp8(CompressedTensorsScheme):
             weight_type=current_platform.fp8_dtype(),
             act_type=params_dtype,
         )
-        kernel_type = choose_mxfp8_linear_kernel(mxfp8_linear_kernel_config)
+        kernel_type = choose_scaled_mm_linear_kernel(
+            mxfp8_linear_kernel_config, _POSSIBLE_MXFP8_KERNELS
+        )
 
         # WEIGHT
         weight = create_fp8_weight_parameter(
@@ -88,9 +91,7 @@ class CompressedTensorsW8A8MXFp8(CompressedTensorsScheme):
         layer.register_parameter("weight_scale", weight_scale)
 
         self.kernel = kernel_type(
-            mxfp8_linear_kernel_config,
-            w_q_param_name="weight",
-            w_s_param_name="weight_scale",
+            mxfp8_linear_kernel_config, ["weight", "weight_scale"]
         )
 
     def process_weights_after_loading(self, layer) -> None:

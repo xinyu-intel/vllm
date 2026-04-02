@@ -5,11 +5,17 @@
 import torch
 
 from vllm.config import CompilationMode, get_current_vllm_config
+from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (
+    MXFP8_BLOCK_SIZE,
+)
+from vllm.model_executor.utils import replace_parameter
 from vllm.platforms import current_platform
 
 from .ScaledMMLinearKernel import (
     FP8ScaledMMLinearKernel,
     FP8ScaledMMLinearLayerConfig,
+    MXFP8ScaledMMLinearKernel,
+    MXFP8ScaledMMLinearLayerConfig,
 )
 
 
@@ -215,3 +221,55 @@ class ChannelWiseTorchFP8ScaledMMLinearKernel(TorchFP8ScaledMMLinearKernel):
         if bias is not None:
             output = output + bias
         return output.to(out_dtype).view(*output_shape)
+
+
+class TorchMXFP8ScaledMMLinearKernel(MXFP8ScaledMMLinearKernel):
+    """
+    MXFP8 linear kernels using Torch.
+    """
+
+    @classmethod
+    def can_implement(
+        cls, c: MXFP8ScaledMMLinearLayerConfig
+    ) -> tuple[bool, str | None]:
+        in_features, out_features = c.partition_weight_shape
+        if in_features % MXFP8_BLOCK_SIZE or out_features % MXFP8_BLOCK_SIZE:
+            return (
+                False,
+                f"XPU MXFP8 Linear requires in/out features to be multiples of "
+                f"{MXFP8_BLOCK_SIZE}, got in_features={in_features}, "
+                f"out_features={out_features}",
+            )
+
+        return True, None
+
+    @classmethod
+    def is_supported(
+        cls, compute_capability: int | None = None
+    ) -> tuple[bool, str | None]:
+        if not current_platform.is_xpu():
+            return False, "requires XPU."
+
+        return True, None
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        weight_scale = layer.weight_scale.view(torch.float8_e8m0fnu)
+        weight_scale = weight_scale.t().contiguous()
+        replace_parameter(layer, "weight", layer.weight.t())
+        replace_parameter(layer, "weight_scale", weight_scale.data)
+
+    def apply_scaled_mm(
+        self,
+        *,
+        A: torch.Tensor,
+        B: torch.Tensor,
+        out_dtype: torch.dtype,
+        As: torch.Tensor,
+        Bs: torch.Tensor,
+        bias: torch.Tensor | None,
+        output_shape: list,
+    ) -> torch.Tensor:
+        output = torch._scaled_mm(
+            A, B, out_dtype=out_dtype, scale_a=As, scale_b=Bs, bias=bias
+        )
+        return torch.narrow(output, 0, 0, output_shape[0]).view(*output_shape)

@@ -55,14 +55,13 @@ from vllm.model_executor.kernels.linear.mxfp8 import (
     MXFP8LinearKernel,
     MXFP8LinearLayerConfig,
 )
-from vllm.model_executor.kernels.linear.mxfp8.xpu import (
-    XPUMXFP8LinearKernel,
-)
 from vllm.model_executor.kernels.linear.scaled_mm import (
     FP8ScaledMMLinearKernel,
     FP8ScaledMMLinearLayerConfig,
     Int8ScaledMMLinearKernel,
     Int8ScaledMMLinearLayerConfig,
+    MXFP8ScaledMMLinearKernel,
+    MXFP8ScaledMMLinearLayerConfig,
     ScaledMMLinearKernel,
     ScaledMMLinearLayerConfig,
 )
@@ -86,6 +85,7 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
     ChannelWiseTorchFP8ScaledMMLinearKernel,
     PerTensorTorchFP8ScaledMMLinearKernel,
     RowWiseTorchFP8ScaledMMLinearKernel,
+    TorchMXFP8ScaledMMLinearKernel,
 )
 from vllm.model_executor.kernels.linear.scaled_mm.rocm import (
     ROCmFP8ScaledMMLinearKernel,
@@ -95,6 +95,7 @@ from vllm.model_executor.kernels.linear.scaled_mm.triton import (
 )
 from vllm.model_executor.kernels.linear.scaled_mm.xpu import (
     XPUFP8ScaledMMLinearKernel,
+    XPUMXFP8ScaledMMLinearKernel,
 )
 from vllm.model_executor.layers.quantization.utils.quant_utils import QuantKey
 from vllm.platforms import PlatformEnum, current_platform
@@ -136,9 +137,10 @@ _POSSIBLE_FP8_KERNELS: dict[PlatformEnum, list[type[FP8ScaledMMLinearKernel]]] =
 }
 
 # in priority/performance order (when available)
-_POSSIBLE_MXFP8_KERNELS: dict[PlatformEnum, list[type[MXFP8LinearKernel]]] = {
+_POSSIBLE_MXFP8_KERNELS: dict[PlatformEnum, list[type[MXFP8ScaledMMLinearKernel]]] = {
     PlatformEnum.XPU: [
-        XPUMXFP8LinearKernel,
+        XPUMXFP8ScaledMMLinearKernel,
+        TorchMXFP8ScaledMMLinearKernel,
     ],
 }
 
@@ -488,6 +490,9 @@ __all__ = [
     "RowWiseTorchFP8ScaledMMLinearKernel",
     "ROCmFP8ScaledMMLinearKernel",
     "TritonInt8ScaledMMLinearKernel",
+    "MXFP8ScaledMMLinearKernel",
+    "TorchMXFP8ScaledMMLinearKernel",
+    "MXFP8ScaledMMLinearLayerConfig",
     "MPLinearKernel",
     "MPLinearLayerConfig",
     "AllSparkLinearKernel",
@@ -501,4 +506,5 @@ __all__ = [
     "XPUW4A8IntLinearKernel",
     "XPUwNa16LinearKernel",
     "MXFP8LinearLayerConfig",
+    "XPUMXFP8ScaledMMLinearKernel",
 ]

@@ -9,6 +9,9 @@ from typing import Generic, TypeVar
 import torch
 
 from vllm.model_executor.layers.quantization.input_quant_fp8 import QuantFP8
+from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (
+    xpu_mxfp8_quantize as quant_mxfp8,
+)
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     QuantKey,
 )
@@ -35,6 +38,14 @@ class FP8ScaledMMLinearLayerConfig(ScaledMMLinearLayerConfig):
     out_dtype: torch.dtype | None
 
 
+@dataclass
+class MXFP8ScaledMMLinearLayerConfig(ScaledMMLinearLayerConfig):
+    full_weight_shape: tuple[int, int]  # [in, out]
+    partition_weight_shape: tuple[int, int]
+    weight_type: torch.dtype
+    act_type: torch.dtype | None
+
+
 _FP8ParamsT = tuple[
     torch.Tensor,  # weight
     torch.Tensor,  # weight_scale
@@ -48,8 +59,12 @@ _Int8ParamsT = tuple[
     torch.Tensor | None,  # input_zp
     torch.Tensor | None,  # azp_adj
 ]
+_MXFP8ParamsT = tuple[
+    torch.Tensor,  # weight
+    torch.Tensor,  # weight_scale
+]
 
-_ParamsT = TypeVar("_ParamsT", _Int8ParamsT, _FP8ParamsT)
+_ParamsT = TypeVar("_ParamsT", _Int8ParamsT, _FP8ParamsT, _MXFP8ParamsT)
 _ConfigT = TypeVar("_ConfigT", bound=ScaledMMLinearLayerConfig)
 
 
@@ -185,3 +200,67 @@ class Int8ScaledMMLinearKernel(
             getattr(layer, i_zp, None),
             getattr(layer, azp_adj, None),
         )
+
+
+class MXFP8ScaledMMLinearKernel(
+    ScaledMMLinearKernel[MXFP8ScaledMMLinearLayerConfig, _MXFP8ParamsT], ABC
+):
+    def __init__(
+        self, c: MXFP8ScaledMMLinearLayerConfig, layer_param_names: Sequence[str]
+    ) -> None:
+        self.fp8_dtype = torch.float8_e4m3fn
+        super().__init__(c, layer_param_names)
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        pass
+
+    def _get_layer_params(self, layer) -> _MXFP8ParamsT:
+        w, w_s = self.layer_param_names
+        return (
+            getattr(layer, w),
+            getattr(layer, w_s),
+        )
+
+    def apply_weights(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        fp8_dtype = self.fp8_dtype
+        maybe_out_dtype = self.config.act_type
+        w, w_s = self._get_layer_params(layer)
+
+        # View input as 2D matrix for fp8 methods
+        x_2d = x.view(-1, x.shape[-1])
+        output_shape = [*x.shape[:-1], w.shape[1]]
+        out_dtype = x.dtype if maybe_out_dtype is None else maybe_out_dtype
+
+        x_2d_q = x_2d
+        if x.dtype != fp8_dtype:
+            x_2d_q, x_s = quant_mxfp8(
+                x_2d,
+            )
+        return self.apply_scaled_mm(
+            A=x_2d_q,
+            B=w,
+            out_dtype=out_dtype,
+            As=x_s,
+            Bs=w_s,
+            bias=bias,
+            output_shape=output_shape,
+        )
+
+    @abstractmethod
+    def apply_scaled_mm(
+        self,
+        *,
+        A: torch.Tensor,
+        B: torch.Tensor,
+        out_dtype: torch.dtype,
+        As: torch.Tensor,
+        Bs: torch.Tensor,
+        bias: torch.Tensor | None,
+        output_shape: list,
+    ) -> torch.Tensor:
+        raise NotImplementedError
