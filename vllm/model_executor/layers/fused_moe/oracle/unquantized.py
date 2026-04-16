@@ -40,6 +40,7 @@ class UnquantizedMoeBackend(Enum):
     BATCHED_TRITON = "BATCHED_TRITON"
     CPU = "CPU"
     XPU = "XPU"
+    BATCHED_XPU = "BATCHED_XPU"
     TPU = "TPU"
     OOT = "OOT"
 
@@ -78,7 +79,10 @@ def _get_priority_backends(moe_config: FusedMoEConfig) -> list[UnquantizedMoeBac
             _move_to_back(_AVAILABLE_BACKENDS, UnquantizedMoeBackend.FLASHINFER_CUTLASS)
 
     elif current_platform.is_xpu():
-        _AVAILABLE_BACKENDS = [UnquantizedMoeBackend.XPU]
+        _AVAILABLE_BACKENDS = [
+            UnquantizedMoeBackend.XPU,
+            UnquantizedMoeBackend.BATCHED_XPU,
+        ]
     elif current_platform.is_cpu():
         _AVAILABLE_BACKENDS = [UnquantizedMoeBackend.CPU]
     return _AVAILABLE_BACKENDS
@@ -124,6 +128,13 @@ def backend_to_kernel_cls(
         from vllm.model_executor.layers.fused_moe.xpu_fused_moe import XPUExperts
 
         return XPUExperts
+
+    elif backend == UnquantizedMoeBackend.BATCHED_XPU:
+        from vllm.model_executor.layers.fused_moe.xpu_fused_moe import (
+            XPUBatchedExperts,
+        )
+
+        return XPUBatchedExperts
 
     else:
         raise ValueError(f"Unknown unquantized MoE backend: {backend.value}")
