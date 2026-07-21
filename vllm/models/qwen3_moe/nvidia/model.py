@@ -38,6 +38,7 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_gather,
 )
+from vllm.distributed.communication_op import tensor_model_parallel_reduce_scatter
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.attention import Attention
@@ -56,9 +57,6 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
 )
-from vllm.model_executor.models.utils import sequence_parallel_chunk
-from vllm.sequence import IntermediateTensors
-
 from vllm.model_executor.models.interfaces import (
     EagleModelMixin,
     MixtureOfExperts,
@@ -76,7 +74,9 @@ from vllm.model_executor.models.utils import (
     make_empty_intermediate_tensors_factory,
     make_layers,
     maybe_prefix,
+    sequence_parallel_chunk,
 )
+from vllm.sequence import IntermediateTensors
 
 logger = init_logger(__name__)
 
@@ -361,7 +361,14 @@ class Qwen3MoeDecoderLayer(nn.Module):
         cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
 
+        parallel_config = vllm_config.parallel_config
+
         self.hidden_size = config.hidden_size
+        self.sp = parallel_config.use_sequence_parallel
+        self.fuse_gemm_comms = (
+            parallel_config.enable_sequence_parallel_fuse_gemm_comms and self.sp
+        )
+        self._sp_threshold = parallel_config.sequence_parallel_fuse_gemm_threshold
         max_position_embeddings = getattr(config, "max_position_embeddings", 8192)
         dual_chunk_attention_config = getattr(
             config, "dual_chunk_attention_config", None
@@ -380,6 +387,8 @@ class Qwen3MoeDecoderLayer(nn.Module):
             prefix=f"{prefix}.self_attn",
             dual_chunk_attention_config=dual_chunk_attention_config,
         )
+        if self.sp:
+            self.self_attn.o_proj.reduce_results = False
 
         # `mlp_only_layers` in the config.
         layer_idx = extract_layer_index(prefix)
@@ -392,6 +401,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
             self.mlp = Qwen3MoeSparseMoeBlock(
                 vllm_config=vllm_config, prefix=f"{prefix}.mlp"
             )
+            self.is_moe_layer = True
         else:
             self.mlp = Qwen3MoeMLP(
                 hidden_size=config.hidden_size,
@@ -399,6 +409,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
                 hidden_act=config.hidden_act,
                 quant_config=quant_config,
                 prefix=f"{prefix}.mlp",
+                reduce_results=not self.sp,
             )
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
@@ -411,6 +422,8 @@ class Qwen3MoeDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.sp and residual is not None:
+            return self._forward_sp(positions, hidden_states, residual)
         # Self Attention
         if residual is None:
             residual = hidden_states
@@ -427,6 +440,68 @@ class Qwen3MoeDecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
 
+    def _forward_sp(
+        self,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden_states, residual = self.input_layernorm(hidden_states, residual)
+
+        use_fused = (
+            self.fuse_gemm_comms
+            and hidden_states.shape[0] >= self._sp_threshold
+            and getattr(self.self_attn.qkv_proj, "fused_comm", None) is not None
+        )
+
+        if use_fused:
+            hidden_states = self._attn_fused(positions, hidden_states)
+        else:
+            hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
+            hidden_states = self.self_attn(
+                positions=positions, hidden_states=hidden_states
+            )
+            hidden_states = tensor_model_parallel_reduce_scatter(hidden_states, dim=0)
+
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+
+        if self.is_moe_layer:
+            hidden_states = self.mlp(hidden_states)
+        elif use_fused:
+            hidden_states = self._mlp_fused(hidden_states)
+        else:
+            hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
+            hidden_states = self.mlp(hidden_states)
+            hidden_states = tensor_model_parallel_reduce_scatter(hidden_states, dim=0)
+
+        return hidden_states, residual
+
+    def _attn_fused(
+        self, positions: torch.Tensor, hidden_states: torch.Tensor
+    ) -> torch.Tensor:
+        from vllm.distributed import get_tp_group
+
+        group_name = get_tp_group().device_group.group_name
+        attn = self.self_attn
+        qkv = attn.qkv_proj.fused_ag_forward(hidden_states, group_name)
+        q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
+        q_by_head = q.view(*q.shape[:-1], q.shape[-1] // attn.head_dim, attn.head_dim)
+        q_by_head = attn.q_norm(q_by_head)
+        q = q_by_head.view(q.shape)
+        k_by_head = k.view(*k.shape[:-1], k.shape[-1] // attn.head_dim, attn.head_dim)
+        k_by_head = attn.k_norm(k_by_head)
+        k = k_by_head.view(k.shape)
+        q, k = attn.rotary_emb(positions, q, k)
+        attn_output = attn.attn(q, k, v)
+        return attn.o_proj.fused_rs_forward(attn_output, group_name)
+
+    def _mlp_fused(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        from vllm.distributed import get_tp_group
+
+        group_name = get_tp_group().device_group.group_name
+        gate_up = self.mlp.gate_up_proj.fused_ag_forward(hidden_states, group_name)
+        out = self.mlp.act_fn(gate_up)
+        return self.mlp.down_proj.fused_rs_forward(out, group_name)
 
 
 class Qwen3MoeModel(nn.Module, EagleModelMixin):
@@ -455,7 +530,8 @@ class Qwen3MoeModel(nn.Module, EagleModelMixin):
 
         config = vllm_config.model_config.hf_text_config
         quant_config = vllm_config.quant_config
-        parallel_config = vllm_config.parallel_config
+        self.parallel_config = vllm_config.parallel_config
+        parallel_config = self.parallel_config
         eplb_config = parallel_config.eplb_config
         self.num_redundant_experts = eplb_config.num_redundant_experts
 
@@ -499,6 +575,11 @@ class Qwen3MoeModel(nn.Module, EagleModelMixin):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
+        # First layer in eager SP: chunk to local size [N/tp, H]
+        if self.parallel_config.use_sequence_parallel and residual is None:
+            hidden_states = sequence_parallel_chunk(hidden_states)
+            residual = hidden_states
+
         aux_hidden_states = self._maybe_add_hidden_state(
             [], self.start_layer, hidden_states, residual
         )
@@ -516,6 +597,10 @@ class Qwen3MoeModel(nn.Module, EagleModelMixin):
                 {"hidden_states": hidden_states, "residual": residual}
             )
         hidden_states, _ = self.norm(hidden_states, residual)
+
+        # Eager SP: all-gather local residual back for LM head
+        if self.parallel_config.use_sequence_parallel:
+            hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
 
         # Return auxiliary hidden states if collected
         if len(aux_hidden_states) > 0:
