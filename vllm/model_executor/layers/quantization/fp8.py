@@ -443,6 +443,12 @@ class Fp8LinearMethod(LinearMethodBase):
 
         self.fp8_linear.process_weights_after_loading(layer)
 
+        from vllm.model_executor.kernels.linear.fused_comm import (
+            init_fused_comm_kernel,
+        )
+
+        layer.fused_comm = init_fused_comm_kernel(self)
+
     def apply(
         self,
         layer: torch.nn.Module,
