@@ -162,6 +162,19 @@ class ParallelConfig:
     """Whether the deployed model is MoE (if known)."""
     enable_expert_parallel: bool = False
     """Use expert parallelism instead of tensor parallelism for MoE layers."""
+    enable_sequence_parallel: bool = False
+    """Enable model-level sequence parallelism. Keeps residual
+    at local-chunk size [N/tp, H] by using explicit all_gather /
+    reduce_scatter around attention and dense MLP blocks instead of
+    all_reduce. Does not require torch.compile."""
+    sequence_parallel_fuse_gemm_threshold: int = 256
+    """Minimum number of local tokens (per TP rank) to activate fused
+    AG+GEMM / GEMM+RS ops. Below this threshold, layers fall
+    back to separate collectives."""
+    enable_sequence_parallel_fuse_gemm_comms: bool = False
+    """Enable fused AG+GEMM and GEMM+RS ops (via
+    torch.distributed._symmetric_memory) for attention and dense MLP
+    linear layers. Shares sequence_parallel_fuse_gemm_threshold."""
     enable_ep_weight_filter: bool = False
     """Skip non-local expert weights during model loading when expert
     parallelism is active.  Each rank only reads its own expert shard from
@@ -666,6 +679,10 @@ class ParallelConfig:
             and self.tensor_parallel_size > 1
             and self.data_parallel_size > 1
         )
+
+    @property
+    def use_sequence_parallel(self) -> bool:
+        return self.enable_sequence_parallel and self.tensor_parallel_size > 1
 
     @property
     def use_batched_dp_moe(self) -> bool:
