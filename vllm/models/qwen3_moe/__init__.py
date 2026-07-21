@@ -2,14 +2,16 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Qwen3MoE model — vendor-specific entry point.
 
-Dispatches to ``xpu/`` on XPU platforms, otherwise falls back to the
-upstream model in vllm.model_executor.models.
+Dispatches to ``xpu/`` or ``nvidia/`` based on the current platform,
+otherwise falls back to the upstream model in vllm.model_executor.models.
 """
 
 from vllm.platforms import current_platform
 
 if current_platform.is_xpu():
     from .xpu.model import Qwen3MoeForCausalLM  # type: ignore[assignment]
+elif current_platform.is_cuda_alike() and not current_platform.is_rocm():
+    from .nvidia.model import Qwen3MoeForCausalLM  # type: ignore[assignment]
 else:
     from vllm.model_executor.models.qwen3_moe import (  # type: ignore[assignment]
         Qwen3MoeForCausalLM,
