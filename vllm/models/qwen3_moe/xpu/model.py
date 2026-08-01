@@ -422,7 +422,7 @@ class Qwen3MoeDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.sp and residual is not None:
+        if self.sp:
             return self._forward_sp(positions, hidden_states, residual)
         # Self Attention
         if residual is None:
@@ -444,9 +444,13 @@ class Qwen3MoeDecoderLayer(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
-        residual: torch.Tensor,
+        residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        hidden_states, residual = self.input_layernorm(hidden_states, residual)
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+        else:
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
         use_fused = (
             self.fuse_gemm_comms
@@ -466,7 +470,13 @@ class Qwen3MoeDecoderLayer(nn.Module):
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
 
         if self.is_moe_layer:
+            # Eager SP: the residual stream is the per-rank local chunk
+            # [N/tp, H]. TP-only FusedMoE all-reduces expert-shard partials
+            # internally and expects full, replicated tokens. Gather to full
+            # tokens, run the MoE, then slice back to this rank's chunk.
+            hidden_states = tensor_model_parallel_all_gather(hidden_states, dim=0)
             hidden_states = self.mlp(hidden_states)
+            hidden_states = sequence_parallel_chunk(hidden_states)
         elif use_fused:
             hidden_states = self._mlp_fused(hidden_states)
         else:
@@ -575,10 +585,11 @@ class Qwen3MoeModel(nn.Module, EagleModelMixin):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        # First layer in eager SP: chunk to local size [N/tp, H]
+        # First layer in eager SP: chunk to local size [N/tp, H]. Leave
+        # residual as None so the first decoder layer seeds it and runs a
+        # plain (non-add) input norm, matching the standard path.
         if self.parallel_config.use_sequence_parallel and residual is None:
             hidden_states = sequence_parallel_chunk(hidden_states)
-            residual = hidden_states
 
         aux_hidden_states = self._maybe_add_hidden_state(
             [], self.start_layer, hidden_states, residual
